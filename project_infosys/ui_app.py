@@ -261,6 +261,18 @@ def merge_docstrings_into_code(file_path, all_classes, all_functions, style_key)
     for line_num, docstring_text in insertions:
         # Insert after the def/class line
         if line_num <= len(modified_lines):
+            # Check if the def line has inline content (e.g., "def func(): pass")
+            def_line = modified_lines[line_num - 1]
+            stripped = def_line.rstrip()
+            
+            # If line ends with pass or ellipsis, remove it and preserve newline
+            if stripped.endswith(": pass"):
+                # Remove the " pass" part (keep the colon)
+                modified_lines[line_num - 1] = stripped[:-5] + "\n"
+            elif stripped.endswith(": ..."):
+                # Remove the " ..." part (keep the colon)
+                modified_lines[line_num - 1] = stripped[:-4] + "\n"
+            
             modified_lines.insert(line_num, docstring_text)
     
     return ''.join(modified_lines)
@@ -713,7 +725,7 @@ def render_analytics(
         else:
             st.info(f"📊 Total: **{total_items}** items | ✅ **{existing_items}** existing | ❌ **{missing_items_count}** missing")
         
-        st.dataframe(doc_results, width='stretch', key=f"{key_prefix}_doc_results_df")
+        st.dataframe(doc_results, use_container_width=True, key=f"{key_prefix}_doc_results_df")
     
     st.markdown("---")
     
@@ -768,7 +780,7 @@ def render_analytics(
     ))
     
     fig.update_layout(height=300)
-    st.plotly_chart(fig, width='stretch', config={'staticPlot': True}, key=f"{key_prefix}_coverage_gauge")
+    st.plotly_chart(fig, use_container_width=True, config={'staticPlot': True}, key=f"{key_prefix}_coverage_gauge")
     
     st.markdown("---")
     
@@ -813,7 +825,7 @@ def render_analytics(
                      color='Status',
                      color_discrete_map={'Documented': '#44ff44', 'Missing Documentation': '#ff4444'})
     fig_pie.update_layout(height=300)
-    st.plotly_chart(fig_pie, width='stretch', config={'staticPlot': True}, key=f"{key_prefix}_pie_chart")
+    st.plotly_chart(fig_pie, use_container_width=True, config={'staticPlot': True}, key=f"{key_prefix}_pie_chart")
     
     st.markdown("---")
     
@@ -887,7 +899,7 @@ def render_analytics(
     ))
     
     fig_compliance.update_layout(height=300)
-    st.plotly_chart(fig_compliance, width='stretch', config={'staticPlot': True}, key=f"{key_prefix}_compliance_gauge")
+    st.plotly_chart(fig_compliance, use_container_width=True, config={'staticPlot': True}, key=f"{key_prefix}_compliance_gauge")
     
     st.markdown("---")
     
@@ -957,7 +969,7 @@ def render_analytics(
                 "Severity": "Error" if issue['code'].startswith('D1') else "Warning"
             })
         
-        st.dataframe(compliance_issues, width='stretch', key=f"{key_prefix}_compliance_issues_df")
+        st.dataframe(compliance_issues, use_container_width=True, key=f"{key_prefix}_compliance_issues_df")
     else:
         st.success("✅ All items are fully compliant with PEP 257!")
 
