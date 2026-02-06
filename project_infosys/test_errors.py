@@ -29,3 +29,7 @@ def validate_email(email: str) -> bool:
     """Check if email is valid"""
     # WARNING: typo - should be 'lower()'
     return "@" in email and email.lower().endswith(".com")
+def m10():
+    pass
+def m09():
+    pass
