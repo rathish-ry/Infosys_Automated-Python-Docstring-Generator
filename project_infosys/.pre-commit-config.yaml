@@ -1,0 +1,45 @@
+# Pre-commit Hook Configuration for Docstring Generation Tool
+# 
+# This hook runs the docstring generation CLI on all staged Python files
+# before allowing a commit. It enforces documentation coverage standards.
+#
+# Installation:
+#   1. Activate your virtual environment:
+#      . venv/Scripts/Activate.ps1  (PowerShell)
+#      or
+#      venv\Scripts\activate.bat    (cmd)
+#   2. Install pre-commit: pip install pre-commit
+#   3. Install hooks: pre-commit install
+#
+# Usage:
+#   - Hooks run automatically on 'git commit' (must have venv activated)
+#   - To bypass: git commit --no-verify
+#   - To test manually: pre-commit run --all-files
+#
+# IMPORTANT: The venv must be activated when running git commands!
+#            This ensures the python command uses the venv python with docgen installed.
+#
+# Behavior:
+#   - CLI exit code 0 (coverage >= min_coverage) → Commit allowed
+#   - CLI exit code 1 (coverage < min_coverage) → Commit blocked
+
+repos:
+  - repo: local
+    hooks:
+      - id: docstring-coverage
+        name: Check Docstring Coverage
+        entry: C:/Users/RATHEESH/Desktop/jupyter/venv/Scripts/python.exe C:/Users/RATHEESH/Desktop/jupyter/.pre-commit-hook.py
+        language: system
+        types: [python]
+        pass_filenames: true
+        description: |
+          Validates that Python files meet minimum docstring coverage threshold.
+          Runs the docgen CLI tool which:
+            - Generates missing docstrings
+            - Fixes code errors (E821, W001)
+            - Calculates coverage percentage
+            - Enforces min_coverage from pyproject.toml (default: 80%)
+          
+          Exit codes:
+            0 = Coverage >= threshold (commit allowed)
+            1 = Coverage < threshold (commit blocked)

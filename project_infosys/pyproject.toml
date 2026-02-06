@@ -1,0 +1,16 @@
+[tool.docgen]
+# Docstring generation configuration
+
+# Docstring style: "google", "numpy", or "rest"
+docstring_style = "google"
+
+# Enable automatic fixing of code errors (E821, W001)
+fix_code_errors = true
+
+# Normalize existing docstrings for PEP 257 compliance
+# true: Remove and regenerate all docstrings
+# false: Leave existing docstrings unchanged
+normalize_existing_docstrings = true
+
+# Minimum required docstring coverage percentage
+min_coverage = 80
