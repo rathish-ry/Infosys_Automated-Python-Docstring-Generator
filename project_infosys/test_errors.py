@@ -20,9 +20,9 @@ class DataValidator:
         return {k: v for k, v in data.items()}
 
 
-def format_output(value, decimal_places: int = 2) -> str:
+def format_output(values, decimal_places: int = 2) -> str:
     # ERROR: undefined variable 'decimals' should be 'decimal_places'
-    return f"{value:.{decimal_places}f}"
+    return f"{values:.{decimal_places}f}"
 
 
 def validate_email(email: str) -> bool:
