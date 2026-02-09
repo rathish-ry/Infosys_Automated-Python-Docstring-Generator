@@ -31,5 +31,4 @@ def validate_email(email: str) -> bool:
     return "@" in email and email.lower().endswith(".com")
 def m10():
     pass
-def m09():
-    pass
+
