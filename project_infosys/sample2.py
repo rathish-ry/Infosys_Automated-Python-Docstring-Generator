@@ -10,4 +10,3 @@ class A:
     def m9(self): pass
     def m10(self): pass
     def m11(self): pass
-    def m12(self): pass
