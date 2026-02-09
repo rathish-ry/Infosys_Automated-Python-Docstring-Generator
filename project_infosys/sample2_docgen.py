@@ -77,3 +77,5 @@ class A:
         Args:
             self: The class or instance.
         """
+
+# test precommit commit by bot
