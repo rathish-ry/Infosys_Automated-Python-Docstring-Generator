@@ -70,10 +70,3 @@ class A:
         Args:
             self: The class or instance.
         """
-    def m11(self):
-        """
-        Execute the operation.
-        
-        Args:
-            self: The class or instance.
-        """
