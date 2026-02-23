@@ -1,0 +1,75 @@
+name: Docstring Coverage CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  docstring-coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python 3.x
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Discover and validate Python files
+        working-directory: ${{ github.workspace }}
+        run: |
+          # Find all Python files in project_infosys/ directory
+          # Exclude: *_docgen.py, __pycache__/, .git/, .github/
+          python_files=$(find project_infosys -type f -name "*.py" \
+            ! -name "*_docgen.py" \
+            ! -path "*/__pycache__/*" \
+            ! -path "*/.git/*" \
+            ! -path "*/.github/*" \
+            | sort)
+
+          if [ -z "$python_files" ]; then
+            echo "No Python files found in project_infosys/"
+            exit 0
+          fi
+
+          echo "Found Python files:"
+          echo "$python_files"
+          echo ""
+
+          # Track if any file failed
+          failed=0
+
+          # Run docgen CLI on each discovered file
+          while IFS= read -r file; do
+            echo "================================================"
+            echo "Checking: $file"
+            echo "================================================"
+            
+            # Run the CLI and capture the exit code
+            python -m docgen "$file"
+            exit_code=$?
+
+            if [ $exit_code -ne 0 ]; then
+              echo "❌ FAILED: $file (exit code: $exit_code)"
+              failed=1
+            else
+              echo "✅ PASSED: $file"
+            fi
+            echo ""
+          done <<< "$python_files"
+
+          # Fail the workflow if any file failed
+          if [ $failed -eq 1 ]; then
+            echo "❌ Workflow FAILED: Coverage enforcement did not pass"
+            exit 1
+          fi
+
+          echo "✅ Workflow PASSED: All files meet coverage requirements"
+          exit 0
