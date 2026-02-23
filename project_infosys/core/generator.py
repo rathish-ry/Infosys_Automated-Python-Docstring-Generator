@@ -144,7 +144,8 @@ def _rest_yields_section(info):
         lines.append(":yields: Description")
         lines.append(":yield type: Any")
     return lines
-
+def foo():
+    """This is just one line."""
 
 def _capitalize_first_word(text):
     """Capitalize the first word (PEP 257 D403 compliance)."""
@@ -169,8 +170,6 @@ def generate_function_docstring(info, description, style="google"):
     # Add period if missing (D400)
     if summary and not summary.endswith("."):
         summary = f"{summary}."
-
-    lines = ['"""', summary]
 
     sections = []
 
@@ -211,13 +210,19 @@ def generate_function_docstring(info, description, style="google"):
                     sections.append("")
                 sections.extend(section)
 
+    # D200 compliance: single-line if no sections, multi-line if sections exist
     if sections:
+        lines = ['"""', summary]
         lines.append("")
         lines += sections
-    lines.append('"""')
+        lines.append('"""')
+    else:
+        # Single-line format
+        lines = [f'"""{summary}"""']
     return "\n".join(lines)
 
 def generate_class_docstring(description, attributes=None, style="google"):
+    """Generate a docstring for a class."""
     style = (style or "google").lower()
     summary = (description or "").strip()
     # Capitalize first word (D403)
@@ -226,32 +231,38 @@ def generate_class_docstring(description, attributes=None, style="google"):
     if summary and not summary.endswith("."):
         summary = f"{summary}."
 
-    lines = ['"""', summary]
-
     attributes = attributes or []
-    if attributes:
-        lines.append("")
-        if style == "google":
-            lines.append("Attributes:")
-            for a in attributes:
-                t = a.get("type")
-                if t:
-                    lines.append(f"    {a['name']} ({t}): Description.")
-                else:
-                    lines.append(f"    {a['name']}: Description.")
-        elif style == "numpy":
-            lines.append("Attributes")
-            lines.append("----------")
-            for a in attributes:
-                t = a.get("type") or "Any"
-                lines.append(f"{a['name']} : {t}")
-                lines.append("    Description")
-        else:
-            for a in attributes:
-                t = a.get("type")
-                lines.append(f":ivar {a['name']}: Description")
-                if t:
-                    lines.append(f":vartype {a['name']}: {t}")
+    
+    # D200 compliance: single-line if no attributes, multi-line if attributes exist
+    if not attributes:
+        # Single-line format
+        return f'"""{summary}"""'
+    
+    # Multi-line format with attributes
+    lines = ['"""', summary]
+    lines.append("")
+    
+    if style == "google":
+        lines.append("Attributes:")
+        for a in attributes:
+            t = a.get("type")
+            if t:
+                lines.append(f"    {a['name']} ({t}): Description.")
+            else:
+                lines.append(f"    {a['name']}: Description.")
+    elif style == "numpy":
+        lines.append("Attributes")
+        lines.append("----------")
+        for a in attributes:
+            t = a.get("type") or "Any"
+            lines.append(f"{a['name']} : {t}")
+            lines.append("    Description")
+    else:
+        for a in attributes:
+            t = a.get("type")
+            lines.append(f":ivar {a['name']}: Description")
+            if t:
+                lines.append(f":vartype {a['name']}: {t}")
 
     lines.append('"""')
     return "\n".join(lines)

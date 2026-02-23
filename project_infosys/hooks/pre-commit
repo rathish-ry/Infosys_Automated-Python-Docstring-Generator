@@ -1,0 +1,13 @@
+#!/bin/sh
+# Git pre-commit hook template to run docstring coverage check
+# Place this file at .git/hooks/pre-commit (executable) to enable.
+
+PYTHON=${PYTHON:-python}
+SCRIPT_DIR=$(git rev-parse --show-toplevel)/scripts
+"$PYTHON" "$SCRIPT_DIR/check_doc_coverage.py" --threshold 80
+RESULT=$?
+if [ $RESULT -ne 0 ]; then
+    echo "Pre-commit: docstring coverage check failed (see output above)."
+    exit $RESULT
+fi
+exit 0

@@ -7,106 +7,7 @@ from core.inference import infer_function_description, infer_class_description
 from core.generator import generate_function_docstring, generate_class_docstring
 from core.coverage import coverage_report
 from core.validator import validate_code_quality, run_pydocstyle
-from core.fixer import CodeFixer
-from core.config_loader import load_project_config, get_config_with_defaults
 from tempfile import NamedTemporaryFile
-
-
-def calculate_coverage(all_functions, all_classes):
-    """Calculate docstring coverage percentage.
-    
-    Formula: (classes with docstrings + functions with docstrings) 
-             / (total classes + total functions) * 100
-    """
-    if not all_functions and not all_classes:
-        return 0.0
-    
-    classes_with_docs = sum(1 for cls in all_classes if cls.get("has_docstring", False))
-    funcs_with_docs = sum(1 for func in all_functions if func.get("has_docstring", False))
-    
-    total = len(all_classes) + len(all_functions)
-    if total == 0:
-        return 0.0
-    
-    coverage = (classes_with_docs + funcs_with_docs) / total * 100
-    return round(coverage, 1)
-
-
-def extract_original_docstrings(file_path):
-    """Extract all docstrings from the original file.
-    
-    Returns a dict mapping (type, name) -> docstring_text
-    """
-    try:
-        tree = parse_file(file_path)
-    except:
-        return {}
-    
-    docstrings = {}
-    
-    # Module docstring
-    module_doc = ast.get_docstring(tree)
-    if module_doc:
-        docstrings[('module', 'module')] = module_doc
-    
-    # Class docstrings
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef):
-            doc = ast.get_docstring(node)
-            if doc:
-                docstrings[('class', node.name)] = doc
-        elif isinstance(node, ast.FunctionDef):
-            doc = ast.get_docstring(node)
-            if doc:
-                docstrings[('function', node.name)] = doc
-    
-    return docstrings
-
-
-def generate_fix_summary(original_file_path, all_classes, all_functions, 
-                        code_issues_before, coverage_before, coverage_after, 
-                        normalize_docstrings, fix_code_errors):
-    """Generate a summary of all fixes applied during the generation run.
-    
-    Returns a dictionary with fix counts and coverage changes.
-    """
-    # Get original docstrings
-    original_docs = extract_original_docstrings(original_file_path)
-    
-    # Count docstrings generated (new ones for items that had none)
-    docstrings_generated = sum(1 for func in all_functions if not func.get("has_docstring", False))
-    docstrings_generated += sum(1 for cls in all_classes if not cls.get("has_docstring", False))
-    
-    # Count existing docstrings normalized (had docstring before, regenerated = changed)
-    # In the current implementation with normalize_existing_docstrings=True,
-    # all existing docstrings are regenerated, so count them if they existed before
-    docstrings_normalized = 0
-    if normalize_docstrings:
-        docstrings_normalized = sum(1 for func in all_functions if func.get("has_docstring", False))
-        docstrings_normalized += sum(1 for cls in all_classes if cls.get("has_docstring", False))
-    
-    # Count code fixes (E821 and W001)
-    e821_count = 0
-    w001_count = 0
-    
-    if fix_code_errors and code_issues_before:
-        for issue in code_issues_before:
-            if issue.get("code") == "E821":
-                e821_count += 1
-            elif issue.get("code") == "W001":
-                w001_count += 1
-    
-    # Build summary
-    summary = {
-        "docstrings_generated": docstrings_generated,
-        "docstrings_normalized": docstrings_normalized,
-        "code_errors_fixed_e821": e821_count,
-        "typos_fixed_w001": w001_count,
-        "coverage_before": coverage_before,
-        "coverage_after": coverage_after,
-    }
-    
-    return summary
 
 
 def _render_docstring_block(docstring: str, indent: str = ""):
@@ -130,28 +31,16 @@ def generate_module_docstring(all_classes, all_functions):
     return docstring
 
 
+import re
+
 def merge_docstrings_into_code(file_path, all_classes, all_functions, style_key):
-    """Merge generated docstrings into the original Python file."""
-    from core.fixer import remove_existing_docstrings
-    
+    """Merge generated docstrings into the original Python file using AST info."""
     with open(file_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+        original_lines = f.readlines()
     
-    # STEP 1: Remove all existing docstrings
-    content = remove_existing_docstrings(content)
+    tree = parse_file(file_path)
     
-    # STEP 2: Parse the code WITHOUT docstrings to get CORRECT line numbers
-    original_lines = content.splitlines(keepends=True)
-    tree = ast.parse(content)  # Parse the content AFTER docstring removal
-    
-    # STEP 3: Re-extract classes and functions from the NEW parsed tree (with correct line numbers)
-    new_classes, new_functions = get_definitions(tree)
-    
-    # Build lookup maps by name to get the corrected line numbers
-    class_map = {cls.name: cls for cls in new_classes}
-    func_map = {func.name: func for func in new_functions}
-    
-    # Create a list of (line_number, docstring) tuples for insertion
+    # Create a list of (line_number, docstring, indent) tuples for insertion
     insertions = []
     
     # Check if module docstring exists (PEP 257 requirement)
@@ -161,121 +50,99 @@ def merge_docstrings_into_code(file_path, all_classes, all_functions, style_key)
         generated_module_doc = generate_module_docstring(all_classes, all_functions)
         if generated_module_doc:
             doc_lines = _render_docstring_block(generated_module_doc, "")
-            insertions.append((0, '\n'.join(doc_lines) + '\n\n'))
+            insertions.append((0, '\n'.join(doc_lines) + '\n\n', 0))
     
-    # STEP 4: Generate and insert ALL docstrings for functions
+    # Process functions and methods
     for func_data in all_functions:
-        func_name = func_data.get("name")
-        class_name = func_data.get("class")
-        
-        # Find the function in the new parsed tree
-        func_node = None
-        if class_name:
-            # Method in a class
-            cls_node = class_map.get(class_name)
-            if cls_node:
-                for node in cls_node.body:
-                    if hasattr(node, 'name') and node.name == func_name:
-                        func_node = node
-                        break
-        else:
-            # Top-level function
-            func_node = func_map.get(func_name)
-        
-        if func_node:
-            # Generate docstring for ALL functions
+        if not func_data["has_docstring"]:
+            # Generate docstring
             docstring = generate_function_docstring(
                 func_data,
                 infer_function_description(func_data),
                 style=style_key
             )
             
-            # Use the CORRECTED line number from the new tree
-            line_num = func_node.lineno
-            if line_num > 0 and line_num <= len(original_lines):
+            # Find the function definition line and calculate indent
+            line_num = func_data.get("line", 0)
+            if line_num > 0:
                 # Get the indent from the def line
                 def_line = original_lines[line_num - 1]
                 base_indent = len(def_line) - len(def_line.lstrip())
                 docstring_indent = ' ' * (base_indent + 4)
                 
-                # Check if docstring is simple one-liner (for D200 compliance)
-                docstring_lines = docstring.splitlines()
-                if len(docstring_lines) == 3 and docstring_lines[0] == '"""' and docstring_lines[2] == '"""':
-                    # Simple one-liner - format it on one line
-                    summary = docstring_lines[1]
-                    if len(docstring_indent + '"""' + summary + '"""') <= 88:  # PEP 8 line length
-                        docstring = f'"""{summary}"""'
-                        doc_lines = [f"{docstring_indent}{docstring}"]
-                    else:
-                        # Too long, keep multiline
-                        doc_lines = _render_docstring_block(docstring, docstring_indent)
-                else:
-                    # Multi-line docstring with parameters
-                    doc_lines = _render_docstring_block(docstring, docstring_indent)
-                
-                insertions.append((line_num, '\n'.join(doc_lines) + '\n'))
+                # Format docstring with proper indentation
+                doc_lines = _render_docstring_block(docstring, docstring_indent)
+                insertions.append((line_num, '\n'.join(doc_lines) + '\n', base_indent))
     
-    # STEP 5: Generate and insert ALL docstrings for classes
+    # Process classes
     for cls_data in all_classes:
-        cls_name = cls_data.get("name")
-        cls_node = class_map.get(cls_name)
-        
-        if cls_node:
-            # Generate docstring for ALL classes
+        if not cls_data["has_docstring"]:
+            # Generate docstring
             docstring = generate_class_docstring(
-                infer_class_description(cls_name),
+                infer_class_description(cls_data["name"]),
                 attributes=cls_data.get("attributes", []),
                 style=style_key
             )
             
-            # Use the CORRECTED line number from the new tree
-            line_num = cls_node.lineno
-            if line_num > 0 and line_num <= len(original_lines):
+            line_num = cls_data.get("line", 0)
+            if line_num > 0:
                 def_line = original_lines[line_num - 1]
                 base_indent = len(def_line) - len(def_line.lstrip())
                 docstring_indent = ' ' * (base_indent + 4)
                 
-                # Check if docstring is simple one-liner (for D200 compliance)
-                docstring_lines = docstring.splitlines()
-                if len(docstring_lines) == 3 and docstring_lines[0] == '"""' and docstring_lines[2] == '"""':
-                    # Simple one-liner - format it on one line
-                    summary = docstring_lines[1]
-                    if len(docstring_indent + '"""' + summary + '"""') <= 88:  # PEP 8 line length
-                        docstring = f'"""{summary}"""'
-                        doc_lines = [f"{docstring_indent}{docstring}"]
-                    else:
-                        # Too long, keep multiline
-                        doc_lines = _render_docstring_block(docstring, docstring_indent)
-                else:
-                    # Multi-line docstring with attributes
-                    doc_lines = _render_docstring_block(docstring, docstring_indent)
-                
-                # Add blank line after class docstring (D204 compliance - exactly 1 blank line)
-                insertions.append((line_num, '\n'.join(doc_lines) + '\n\n'))
+                doc_lines = _render_docstring_block(docstring, docstring_indent)
+                # Add blank line after class docstring (PEP 257 D204 compliance)
+                insertions.append((line_num, '\n'.join(doc_lines) + '\n\n', base_indent))
     
-    # STEP 6: Sort insertions by line number (reverse order to maintain line numbers)
+    # Sort insertions by line number (reverse order to maintain line numbers)
     insertions.sort(key=lambda x: x[0], reverse=True)
     
-    # STEP 7: Insert new docstrings into the code
+    # Insert docstrings into the code
     modified_lines = original_lines[:]
-    for line_num, docstring_text in insertions:
+    for line_num, docstring_text, indent in insertions:
         # Insert after the def/class line
-        if line_num <= len(modified_lines):
-            # Check if the def line has inline content (e.g., "def func(): pass")
-            def_line = modified_lines[line_num - 1]
-            stripped = def_line.rstrip()
-            
-            # If line ends with pass or ellipsis, remove it and preserve newline
-            if stripped.endswith(": pass"):
-                # Remove the " pass" part (keep the colon)
-                modified_lines[line_num - 1] = stripped[:-5] + "\n"
-            elif stripped.endswith(": ..."):
-                # Remove the " ..." part (keep the colon)
-                modified_lines[line_num - 1] = stripped[:-4] + "\n"
-            
-            modified_lines.insert(line_num, docstring_text)
-    
-    return ''.join(modified_lines)
+        modified_lines.insert(line_num, docstring_text)
+    merged = ''.join(modified_lines)
+    # sanity-check syntax; if invalid return original so we don't break parser later
+    try:
+        ast.parse(merged)
+    except SyntaxError:
+        # if the merged code is bad, log a warning in console and fall back
+        print(f"WARNING: merged code is syntactically invalid, returning original")
+        return ''.join(original_lines)
+    return merged
+
+
+def merge_docstrings_regex(file_path, style_key):
+    """Fallback merge using regex; adds simple TODO docstrings below each definition.
+
+    Returns a tuple (new_text, inserted_count).
+    """
+    with open(file_path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+
+    output = []
+    inserted = 0
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        output.append(line)
+        m = re.match(r'^(?P<indent>\s*)(?P<kind>def|class)\s+(?P<name>\w+)', line)
+        if m:
+            indent = m.group('indent')
+            name = m.group('name')
+            # look ahead to see if the next nonblank line is a docstring
+            j = i + 1
+            while j < len(lines) and lines[j].strip() == '':
+                j += 1
+            has_doc = False
+            if j < len(lines) and re.match(r'\s*("""|\'\'\')', lines[j]):
+                has_doc = True
+            if not has_doc:
+                output.append(f"{indent}    \"\"\"TODO: describe {name}\"\"\"\n")
+                inserted += 1
+        i += 1
+    return ''.join(output), inserted
 
 
 def build_pydocstyle_stub(module_docstring, classes, functions, style_key):
@@ -340,17 +207,6 @@ st.set_page_config(page_title="Python Docstring Generator & Validator", layout="
 st.title("Python Docstring Generator & Validator")
 st.caption("AI-Powered Documentation Generation with PEP 257 Compliance Analysis")
 
-# -------- Load Project Configuration --------
-project_config = load_project_config(workspace_root=os.getcwd())
-config = get_config_with_defaults(project_config)
-
-# Store config in session state for use throughout the app
-if 'project_config' not in st.session_state:
-    st.session_state.project_config = config
-
-# Update with session state
-config = st.session_state.project_config
-
 # ---------------- Sidebar ----------------
 st.sidebar.header("📁 Upload Python File")
 
@@ -358,47 +214,8 @@ uploaded_file = st.sidebar.file_uploader("Choose a Python file", type=["py"])
 
 # Style selection
 st.sidebar.header("🧾 Docstring Styles")
-style_options = ["Google", "NumPy", "reST"]
-default_style_index = style_options.index(config["docstring_style"].capitalize()) if config["docstring_style"].lower() in ["google", "numpy", "rest"] else 0
-style = st.sidebar.radio("Select style", style_options, index=default_style_index)
+style = st.sidebar.radio("Select style", ["Google", "NumPy", "reST"], index=0)
 style_key = {"Google": "google", "NumPy": "numpy", "reST": "rest"}[style]
-
-# Display loaded configuration
-st.sidebar.markdown("---")
-st.sidebar.header("⚙️ Configuration")
-with st.sidebar.expander("View Configuration", expanded=False):
-    st.write("**Configuration Values:**")
-    
-    # Docstring Style
-    config_style = config["docstring_style"]
-    active_style = style_key
-    st.write(f"**Docstring Style**")
-    st.write(f"  - Config file: `{config_style}`")
-    st.write(f"  - Active value: `{active_style}`")
-    
-    st.write("")
-    
-    # Code Error Fixing
-    st.write(f"**Fix Code Errors:** `{config['fix_code_errors']}`")
-    
-    st.write("")
-    
-    # Normalize Docstrings
-    st.write(f"**Normalize Docstrings:** `{config['normalize_existing_docstrings']}`")
-    
-    st.write("")
-    
-    # Min Coverage
-    st.write(f"**Min Coverage:** `{config['min_coverage']}%`")
-    
-    st.write("")
-    st.markdown("---")
-    
-    # Configuration source
-    if project_config:
-        st.write("**Source:** Loaded from `pyproject.toml` [tool.docgen]")
-    else:
-        st.write("**Source:** Default values (no `pyproject.toml` found)")
 
 py_files = []
 file_coverages = {}
@@ -420,8 +237,14 @@ all_classes = []
 
 ast_logs = []
 
+parse_error_original = None
 for file in py_files:
-    tree = parse_file(file)
+    try:
+        tree = parse_file(file)
+    except Exception as e:
+        parse_error_original = e
+        # fall back to empty tree so later code can continue
+        tree = ast.parse("\n")
     classes, functions = get_definitions(tree)
 
     ast_logs.append(f"Parsed {file}")
@@ -450,64 +273,34 @@ generated_func_names = [
 ]
 missing_count = len(generated_class_names) + len(generated_func_names)
 
-# Calculate coverage BEFORE generation
-coverage_before = calculate_coverage(all_functions, all_classes)
+# Build merged code once for reuse in analysis and download
+merge_failed = False
+fallback_used = False
+fallback_count = 0
 
-# Pre-generation: Validate the uploaded file (original code)
-# This MUST be done BEFORE fixing issues, to show the "before" state
-pydocstyle_issues_before = run_pydocstyle(temp_file_path)
-code_issues_before = validate_code_quality(temp_file_path)
+with open(temp_file_path, 'r', encoding='utf-8') as f:
+    original_code = f.read()
 
-# AUTOMATIC CODE FIXING: Fix any code issues detected before generation
-# Only apply fixes if fix_code_errors is enabled in configuration
-# Create a separate fixed version - NEVER modify the original uploaded file
-fixed_temp_path = temp_file_path  # Default to original if no fixes needed
-if code_issues_before and config["fix_code_errors"]:
-    st.info("🔧 Automatically fixing detected code issues...")
-    fixer = CodeFixer(temp_file_path)
-    fixed_code = fixer.fix_issues(code_issues_before)
-    
-    # Save the fixed code to a SEPARATE file - keep original untouched
-    fixed_temp_path = f"fixed_{uploaded_file.name}"
-    with open(fixed_temp_path, 'w', encoding='utf-8') as f:
-        f.write(fixed_code)
-    
-    # Re-parse the fixed code to update AST data
-    tree = parse_file(fixed_temp_path)
-    classes, functions = get_definitions(tree)
-    
-    all_classes = []
-    all_functions = []
-    
-    for cls in classes:
-        all_classes.append(extract_class_data(cls))
-        for node in cls.body:
-            if node.__class__.__name__ == "FunctionDef":
-                all_functions.append(
-                    extract_function_data(node, class_name=cls.name)
-                )
-    
-    for func in functions:
-        if not any(func in cls.body for cls in classes):
-            all_functions.append(extract_function_data(func))
-    
-    # Update tracking lists after fix
-    generated_class_names = [cls["name"] for cls in all_classes if not cls["has_docstring"]]
-    generated_func_names = [
-        f"{func['class']}.{func['name']}" if func["class"] else func["name"]
-        for func in all_functions if not func["has_docstring"]
-    ]
-    missing_count = len(generated_class_names) + len(generated_func_names)
+# always try AST merge first (may return original if no items)
+merged_code = merge_docstrings_into_code(temp_file_path, all_classes, all_functions, style_key)
 
-# Build merged code based on configuration
-# If normalize_existing_docstrings is True: regenerate docstrings for PEP 257 compliance
-# If False: skip docstring processing entirely
-if config["normalize_existing_docstrings"]:
-    merged_code = merge_docstrings_into_code(fixed_temp_path, all_classes, all_functions, style_key)
-else:
-    # Skip docstring processing, just use the fixed code as-is
-    with open(fixed_temp_path, 'r', encoding='utf-8') as f:
-        merged_code = f.read()
+# if merge didn't change file and we previously encountered a parse error,
+# or if AST merge produced nothing but the file contains defs, try regex
+if merged_code == original_code and parse_error_original:
+    candidate, inserted = merge_docstrings_regex(temp_file_path, style_key)
+    if inserted > 0 and candidate != original_code:
+        merged_code = candidate
+        fallback_used = True
+        fallback_count = inserted
+    else:
+        # regex also failed or inserted nothing
+        merge_failed = True
+elif merged_code == original_code:
+    merge_failed = True
+
+# adjust missing_count if fallback inserted placeholders
+if fallback_used:
+    missing_count = fallback_count
 
 # Create a temporary file for the generated output (for AFTER analysis)
 generated_temp_path = None
@@ -556,9 +349,21 @@ def render_analytics(
     
     # Module entry
     source_path = source_path or temp_file_path
-    module_docstring = ast.get_docstring(parse_file(source_path))
+    module_docstring = None
     module_issues = errors_by_name.get("module", [])
-    has_module_doc = module_docstring is not None
+    has_module_doc = False
+    if source_path:
+        try:
+            module_docstring = ast.get_docstring(parse_file(source_path))
+            has_module_doc = module_docstring is not None
+        except Exception as exc:
+            # parsing failed; show within analytics and continue
+            st.error(f"Could not parse {source_path}: {exc}")
+            try:
+                st.code(open(source_path,'r',encoding='utf-8').read(), language='python')
+            except Exception:
+                pass
+            # leave has_module_doc False and module_docstring None
     
     # For "Before", compliant means has docstring AND no issues
     # For "After", compliant means no issues (all should have docstrings)
@@ -725,7 +530,7 @@ def render_analytics(
         else:
             st.info(f"📊 Total: **{total_items}** items | ✅ **{existing_items}** existing | ❌ **{missing_items_count}** missing")
         
-        st.dataframe(doc_results, use_container_width=True, key=f"{key_prefix}_doc_results_df")
+        st.dataframe(doc_results, width='stretch', key=f"{key_prefix}_doc_results_df")
     
     st.markdown("---")
     
@@ -780,7 +585,7 @@ def render_analytics(
     ))
     
     fig.update_layout(height=300)
-    st.plotly_chart(fig, use_container_width=True, config={'staticPlot': True}, key=f"{key_prefix}_coverage_gauge")
+    st.plotly_chart(fig, width='stretch', config={'staticPlot': True}, key=f"{key_prefix}_coverage_gauge")
     
     st.markdown("---")
     
@@ -825,7 +630,7 @@ def render_analytics(
                      color='Status',
                      color_discrete_map={'Documented': '#44ff44', 'Missing Documentation': '#ff4444'})
     fig_pie.update_layout(height=300)
-    st.plotly_chart(fig_pie, use_container_width=True, config={'staticPlot': True}, key=f"{key_prefix}_pie_chart")
+    st.plotly_chart(fig_pie, width='stretch', config={'staticPlot': True}, key=f"{key_prefix}_pie_chart")
     
     st.markdown("---")
     
@@ -899,7 +704,7 @@ def render_analytics(
     ))
     
     fig_compliance.update_layout(height=300)
-    st.plotly_chart(fig_compliance, use_container_width=True, config={'staticPlot': True}, key=f"{key_prefix}_compliance_gauge")
+    st.plotly_chart(fig_compliance, width='stretch', config={'staticPlot': True}, key=f"{key_prefix}_compliance_gauge")
     
     st.markdown("---")
     
@@ -969,7 +774,7 @@ def render_analytics(
                 "Severity": "Error" if issue['code'].startswith('D1') else "Warning"
             })
         
-        st.dataframe(compliance_issues, use_container_width=True, key=f"{key_prefix}_compliance_issues_df")
+        st.dataframe(compliance_issues, width='stretch', key=f"{key_prefix}_compliance_issues_df")
     else:
         st.success("✅ All items are fully compliant with PEP 257!")
 
@@ -986,14 +791,19 @@ code_issues_after = validate_code_quality(generated_temp_path)
 all_functions_after = []
 all_classes_after = []
 
-tree_after = parse_file(generated_temp_path)
-classes_after, functions_after = get_definitions(tree_after)
+parse_error_after = None
+try:
+    tree_after = parse_file(generated_temp_path)
+    classes_after, functions_after = get_definitions(tree_after)
+except Exception as se:
+    parse_error_after = se
+    # continue with empty lists so tabs render
+    classes_after, functions_after = [], []
 
 for cls in classes_after:
     all_classes_after.append(extract_class_data(cls))
     for node in cls.body:
         if node.__class__.__name__ == "FunctionDef":
-            
             all_functions_after.append(
                 extract_function_data(node, class_name=cls.name)
             )
@@ -1002,66 +812,72 @@ for func in functions_after:
     if not any(func in cls.body for cls in classes_after):
         all_functions_after.append(extract_function_data(func))
 
-# Calculate coverage AFTER generation
-coverage_after = calculate_coverage(all_functions_after, all_classes_after)
-
-# Generate Fix Summary
-fix_summary = generate_fix_summary(
-    temp_file_path,
-    all_classes,
-    all_functions,
-    code_issues_before,
-    coverage_before,
-    coverage_after,
-    config["normalize_existing_docstrings"],
-    config["fix_code_errors"]
-)
-
 # ---------------- TABS ----------------
 tab1, tab2, tab3 = st.tabs(["Before Generation", "Docstring Generation", "After Generation"])
 
 # ============== BEFORE GENERATION TAB ==============
 with tab1:
     st.info("📌 This tab shows analytics **BEFORE** applying generated docstrings. Use this as a baseline to compare improvements.")
-    render_analytics(
-        all_functions,
-        all_classes,
-        pydocstyle_issues_before,
-        code_issues_before,
-        style_key,
-        "📊 Before Generation - Analysis",
-        key_prefix="before",
-        is_after_generation=False,
-        source_path=temp_file_path,
-    )
+    if parse_error_original:
+        st.error(f"Syntax error parsing uploaded file: {parse_error_original}")
+        try:
+            with st.expander("Show uploaded file contents"):
+                st.code(open(temp_file_path, 'r', encoding='utf-8').read(), language='python')
+        except Exception:
+            pass
+    try:
+        render_analytics(
+            all_functions,
+            all_classes,
+            pydocstyle_issues_before,
+            code_issues_before,
+            style_key,
+            "📊 Before Generation - Analysis",
+            key_prefix="before",
+            is_after_generation=False,
+            source_path=temp_file_path,
+        )
+    except Exception as exc:
+        st.error(f"Error rendering analytics: {exc}")
 
 # ============== DOCSTRING GENERATION TAB ==============
 with tab2:
     st.markdown(f"### 📝 Complete Code with Generated Docstrings")
     st.info(f"📌 View and download your code with AI-generated docstrings inserted. Style: **{style}**")
 
-    if missing_count == 0:
-        st.success("✅ All items already have docstrings! No generation needed.")
+    if merge_failed:
+        st.warning("⚠️ Docstrings could not be merged due to syntax issues in the source file. Please fix any indentation or syntax errors and try again.")
+        st.markdown("---")
+        st.markdown("### 📄 Generated/Merged Code")
+        st.code(merged_code, language="python", line_numbers=True)
+    elif fallback_used:
+        st.warning(f"⚠️ Source file contained syntax errors; {fallback_count} placeholder docstring(s) were inserted.")
+        st.markdown("---")
+        st.markdown("### 📄 Generated/Merged Code (placeholders)")
         st.code(merged_code, language="python", line_numbers=True)
     else:
-        # Display statistics
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("📄 Total Items", len(all_classes) + len(all_functions))
-        with col2:
-            st.metric("✅ Already Documented", len(all_classes) + len(all_functions) - missing_count)
-        with col3:
-            st.metric("🆕 Docstrings Generated", missing_count)
-        
-        st.markdown("---")
-        
-        # Display the merged code
-        st.markdown("### 📄 Complete Python File with Docstrings")
-        st.code(merged_code, language="python", line_numbers=True)
-        
-        st.markdown("---")
-        
-        st.success(f"✅ Ready to download! {missing_count} docstring(s) have been generated and merged into your code.")
+        if missing_count == 0:
+            st.success("✅ All items already have docstrings! No generation needed.")
+            st.code(merged_code, language="python", line_numbers=True)
+        else:
+            # Display statistics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("📄 Total Items", len(all_classes) + len(all_functions))
+            with col2:
+                st.metric("✅ Already Documented", len(all_classes) + len(all_functions) - missing_count)
+            with col3:
+                st.metric("🆕 Docstrings Generated", missing_count)
+            
+            st.markdown("---")
+            
+            # Display the merged code
+            st.markdown("### 📄 Complete Python File with Docstrings")
+            st.code(merged_code, language="python", line_numbers=True)
+            
+            st.markdown("---")
+            
+            st.success(f"✅ Ready to download! {missing_count} docstring(s) have been generated and merged into your code.")
     
     # Download button (always available)
     base_name = uploaded_file.name
@@ -1082,51 +898,30 @@ with tab2:
 # ============== AFTER GENERATION TAB ==============
 with tab3:
     st.info("📌 This tab shows analytics **AFTER** applying all generated docstrings. Compare with 'Before Generation' to see improvements!")
-    render_analytics(
-        all_functions_after,
-        all_classes_after,
-        pydocstyle_issues_after,
-        code_issues_after,
-        style_key,
-        "📊 After Generation - Analysis",
-        key_prefix="after",
-        is_after_generation=True,
-        source_path=generated_temp_path,
-        generated_class_names=generated_class_names,
-        generated_func_names=generated_func_names,
-        module_generated=False,
-    )
-    
-    # Display Fix Summary
-    st.markdown("---")
-    st.markdown("### 🛠 Fix Summary")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**Docstrings Generated**")
-        st.write(f"New docstrings added: `{fix_summary['docstrings_generated']}`")
-        
-        st.write("**Docstrings Normalized**")
-        st.write(f"Existing docstrings reformatted: `{fix_summary['docstrings_normalized']}`")
-        
-        st.write("**Code Fixes Applied**")
-        st.write(f"Undefined variables (E821): `{fix_summary['code_errors_fixed_e821']}`")
-        st.write(f"Typos fixed (W001): `{fix_summary['typos_fixed_w001']}`")
-    
-    with col2:
-        st.write("**Coverage Improvement**")
-        coverage_change = fix_summary['coverage_after'] - fix_summary['coverage_before']
-        
-        st.metric(
-            "Docstring Coverage",
-            f"{fix_summary['coverage_after']}%",
-            delta=f"{coverage_change:+.1f}%" if coverage_change != 0 else "No change"
+    if parse_error_after:
+        st.error(f"Syntax error parsing generated file: {parse_error_after}")
+        try:
+            with st.expander("Show generated file contents"):
+                st.code(open(generated_temp_path, 'r', encoding='utf-8').read(), language='python')
+        except Exception:
+            pass
+    try:
+        render_analytics(
+            all_functions_after,
+            all_classes_after,
+            pydocstyle_issues_after,
+            code_issues_after,
+            style_key,
+            "📊 After Generation - Analysis",
+            key_prefix="after",
+            is_after_generation=True,
+            source_path=generated_temp_path,
+            generated_class_names=generated_class_names,
+            generated_func_names=generated_func_names,
+            module_generated=False,
         )
-        
-        st.write("")
-        st.write(f"**Before:** {fix_summary['coverage_before']}%")
-        st.write(f"**After:** {fix_summary['coverage_after']}%")
+    except Exception as exc:
+        st.error(f"Error rendering analytics: {exc}")
     
     # Add comparison summary for before/after
     st.markdown("---")
@@ -1150,13 +945,9 @@ with tab3:
         st.markdown("**After Generation**")
         st.metric("Docstring Issues", after_errors)
 
-# Clean up temporary files
+# Clean up temporary file
 if os.path.exists(temp_file_path):
     os.remove(temp_file_path)
-
-# Clean up the fixed temp file if it was created
-if 'fixed_temp_path' in locals() and fixed_temp_path != temp_file_path and os.path.exists(fixed_temp_path):
-    os.remove(fixed_temp_path)
 
 if generated_temp_path and os.path.exists(generated_temp_path):
     os.remove(generated_temp_path)
